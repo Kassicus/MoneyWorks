@@ -75,6 +75,64 @@ describe('normalizeAccountsResponse', () => {
     expect(() => normalizeAccountsResponse(payload)).toThrow(/acct-broken/)
     expect(() => normalizeAccountsResponse(payload)).not.toThrow(/MALFORMED/)
   })
+
+  /**
+   * The half of that guard `Number.isFinite` did not cover, because `Number('')`,
+   * `Number(null)` and `Number('  ')` are a finite **0** and not NaN. A blanked balance
+   * therefore passed the check above and, being `>= 0`, classified as an *asset* worth
+   * $0.00. `applySync` writes `is_asset` on conflict, so a credit card reported this way
+   * leaves /debts taking its APR and minimum payment with it, net worth rises, and the
+   * day's snapshot is wrong permanently — the next good sync writes tomorrow, not today.
+   */
+  it('refuses a blank balance rather than writing a card as a $0.00 asset', () => {
+    // `"balance": null`, `"balance": ""`, whitespace, and the field absent entirely — the
+    // four ways a JSON payload says nothing, all of which `Number` answers 0 for.
+    for (const balance of [null, '', '   ', undefined]) {
+      const payload = { accounts: [{ id: 'acct-blank', name: 'Blank', balance }] }
+      expect(() => normalizeAccountsResponse(payload)).toThrow(/acct-blank/)
+    }
+  })
+
+  const withTransaction = (t: Record<string, unknown>) => ({
+    accounts: [{
+      id: 'acct-checking', name: 'Everyday Checking', balance: '1543.27', transactions: [t],
+    }],
+  })
+
+  /**
+   * Unguarded before this: `dollarsToCents(Number(null))` is 0, so a blanked amount was
+   * written as a $0.00 transaction, and junk text was a NaN that drizzle's `PgBigInt53`
+   * hands to Postgres verbatim — an insert error that aborts the run *after* the accounts
+   * and snapshots above it are already written, with nothing to roll them back.
+   */
+  it('refuses a blank or unusable amount, naming the transaction and not the amount', () => {
+    for (const amount of [null, '', '   ', 'MALFORMED', undefined]) {
+      const payload = withTransaction({ id: 'txn-bad', posted: 1786000000, amount })
+      expect(() => normalizeAccountsResponse(payload)).toThrow(/txn-bad/)
+    }
+    expect(() => normalizeAccountsResponse(
+      withTransaction({ id: 'txn-bad', posted: 1786000000, amount: 'MALFORMED' }),
+    )).not.toThrow(/MALFORMED/)
+  })
+
+  /**
+   * Two different failures, both silent-then-loud. `posted: null` is 0, which is
+   * 1970-01-01: a real amount filed fifty years early, with no error at all. An absent
+   * `posted` is NaN, and `new Date(NaN).toISOString()` throws a `RangeError` — not a
+   * refusal this app wrote, just the run dying mid-write.
+   */
+  it('refuses a blank or missing posted date rather than dating it 1970-01-01', () => {
+    for (const posted of [null, '', '   ', 'yesterday']) {
+      const payload = withTransaction({ id: 'txn-undated', posted, amount: '-45.50' })
+      expect(() => normalizeAccountsResponse(payload)).toThrow(/txn-undated/)
+    }
+
+    const missing = withTransaction({ id: 'txn-undated', amount: '-45.50' })
+    expect(() => normalizeAccountsResponse(missing)).toThrow(/txn-undated/)
+    // Specifically not the `RangeError` that `.toISOString()` raises on an invalid date:
+    // that one arrives from a stack frame nobody here wrote, after half a run is applied.
+    expect(() => normalizeAccountsResponse(missing)).not.toThrow(RangeError)
+  })
 })
 
 describe('fetchAccounts', () => {
