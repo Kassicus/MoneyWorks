@@ -146,6 +146,33 @@ describe('manual assets', () => {
     await close()
   })
 
+  it('refuses a name that differs only by Unicode composition or an invisible character', async () => {
+    const { db, close } = await makeTestDb()
+    // NFD: a bare `e` followed by a combining acute. macOS hands this form out of Finder,
+    // while typing the same name yields NFC (U+00E9). The two render identically, and
+    // Postgres folds neither — `lower()` does case, not composition — so if they are not
+    // folded here they are not folded at all.
+    const nfd = 'Cafe\u0301 Loan'
+    const nfc = 'Caf\u00e9 Loan'
+    expect(nfd).not.toBe(nfc)
+
+    await addManualAsset(db, { ...house, name: nfd })
+    const [row] = await db.select().from(manualAssets)
+    // Stored composed, whichever form was typed.
+    expect(row.name).toBe(nfc)
+
+    for (const name of [
+      nfc,
+      nfd,
+      `${nfc}\u200b`, // a pasted zero-width space, which JS `\s` does not match
+      `\ufeff${nfd}`, // a pasted byte-order mark
+    ]) {
+      await expect(addManualAsset(db, { ...house, name })).rejects.toThrow(/already exists/)
+    }
+    expect(await db.select().from(manualAssets)).toHaveLength(1)
+    await close()
+  })
+
   it('stores the name as it renders, and refuses one that is blank', async () => {
     const { db, close } = await makeTestDb()
     await addManualAsset(db, { ...house, name: '  My  House  ' })

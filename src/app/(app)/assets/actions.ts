@@ -27,16 +27,29 @@ export type LatestValuation = {
   asOf: string
 }
 
+/** Zero-width space, ZWNJ, ZWJ, word joiner, BOM. None of them mark the page. */
+const INVISIBLE = /[\u200B-\u200D\u2060\uFEFF]/g
+
 /**
- * A name as it is stored: trimmed, with runs of whitespace collapsed to one space.
+ * A name as it is stored: composed, stripped of invisible characters, trimmed, and with runs
+ * of whitespace collapsed to one space.
  *
- * The rule is *normalise what rendering makes invisible*, and it stops there. HTML collapses
- * leading, trailing and repeated whitespace, so `"My  House"` and `"My House"` are the same
- * two words on the page and would sit in the list looking like one asset entered twice. An
- * accent or a different word is visibly a different name and is left alone.
+ * The rule is *normalise what rendering makes invisible*, and it stops there. Two names that
+ * draw the same glyphs in the same order are one name:
+ *
+ * - **Composition.** `"Café"` written NFC (U+00E9) and NFD (`e` + U+0301) are different byte
+ *   strings that render identically, and both occur in real use — macOS hands out NFD from
+ *   Finder while typing the name yields NFC. Postgres does no Unicode normalisation and
+ *   `lower()` does not fold them, so this must happen here or not at all.
+ * - **Invisible characters.** A zero-width space or a pasted BOM is not matched by JS `\s`
+ *   and shows nothing on the page.
+ * - **Whitespace.** HTML collapses leading, trailing and repeated whitespace, so `"My  House"`
+ *   and `"My House"` are the same two words on the page.
+ *
+ * An accent that is *visible*, or a different word, is a different name and is left alone.
  */
 function canonicalName(name: string): string {
-  return name.trim().replace(/\s+/g, ' ')
+  return name.normalize('NFC').replace(INVISIBLE, '').trim().replace(/\s+/g, ' ')
 }
 
 /**
@@ -82,10 +95,10 @@ function valuationCents(valueDollars: number): number {
  * index cannot express the rule, since revaluations legitimately produce many rows sharing a
  * name, so it lives here: unique at creation, unconstrained thereafter.
  *
- * The comparison ignores case and surrounding space. Those variants would *not* merge — they
- * are distinct strings — but they are indistinguishable in a list, so a later revaluation
- * lands on whichever the owner happened to pick and freezes the other at its old figure
- * inside net worth.
+ * The comparison ignores case and everything `canonicalName` folds. Those variants would *not*
+ * merge — they are distinct strings — but they are indistinguishable in a list, so a later
+ * revaluation lands on whichever the owner happened to pick and freezes the other at its old
+ * figure inside net worth, with no delete and no rename to undo it.
  */
 export async function addManualAsset(db: Db, input: {
   name: string; kind: string; isAsset: boolean; valueDollars: number; asOf: string
@@ -157,11 +170,17 @@ export async function revalueManualAsset(db: Db, input: {
  * in memory keeps the rule about which valuation is current in TypeScript, where it can be
  * read, instead of splitting it between a window function and `netWorthOn`.
  *
- * Ties on `as_of` break by `created_at`, exactly as `netWorthOn` breaks them, so the figure
- * this page shows and the figure the dashboard counts cannot disagree. Two rows tied on
- * *both* would be genuinely indistinguishable — the rows carry nothing else that orders them
- * — and cannot arise from this UI: they would be two form submissions landing in the same
- * microsecond.
+ * Ties on `as_of` break by `created_at`, as `netWorthOn` breaks them, so the figure this page
+ * shows and the figure the dashboard counts agree on which valuation is current.
+ *
+ * On a *full* tie — same `as_of` and same `created_at` — the two do diverge: this keeps the
+ * first such row of the loaded order, while `latestOnOrBefore` keeps the last. Unreachable
+ * today, because `now()` is microsecond-resolution and each write here is its own transaction,
+ * so no two rows can share a `created_at`. It stops being unreachable the moment two writes
+ * are wrapped in one `db.transaction`: Postgres `now()` is the *transaction* timestamp, so
+ * both rows would be stamped identically. Left as is rather than aligned, because a full tie
+ * is undecidable from the data — the rows carry nothing else that orders them — and the fix
+ * belongs wherever that transaction is introduced.
  *
  * Valuations dated in the future are *not* filtered out. They do not count towards net worth
  * until their date arrives, but the asset must still appear here — it is the only place the
