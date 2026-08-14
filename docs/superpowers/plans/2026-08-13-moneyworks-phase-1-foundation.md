@@ -23,6 +23,7 @@ Every task's requirements implicitly include these.
 - **Read-only against all external financial data.** No code path writes to SimpleFIN or any bank.
 - **Secrets are server-side only:** `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `ENCRYPTION_KEY`, `ALLOWED_EMAIL`, `CLERK_SECRET_KEY`. None may be referenced from a Client Component.
 - **Sync runs daily at 09:00 UTC.** Snapshot dates are UTC dates.
+- **Functions that take a database handle type it as `Db`** from `src/db/types.ts` — never `any`. `Db` is a union of the production Neon client and the PGlite client used in tests, which is what lets the same function be exercised by both.
 - **Every task ends with a commit.**
 
 ## File Structure
@@ -31,6 +32,7 @@ Every task's requirements implicitly include these.
 |---|---|
 | `src/db/schema.ts` | Drizzle table definitions — the single source of truth for shape |
 | `src/db/client.ts` | Neon pooled connection, exported as `db` |
+| `src/db/types.ts` | The `Db` handle type shared by every function that takes a database |
 | `src/lib/money.ts` | Cents arithmetic and dollar formatting |
 | `src/lib/crypto.ts` | AES-256-GCM encrypt/decrypt for at-rest secrets |
 | `src/lib/secrets.ts` | Read/write encrypted values in the `secrets` table |
@@ -52,13 +54,15 @@ Tests mirror source paths under `tests/`.
 
 **Files:**
 - Create: `package.json`, `tsconfig.json`, `drizzle.config.ts`, `.env.example`
-- Create: `src/db/schema.ts`, `src/db/client.ts`
+- Create: `src/db/schema.ts`, `src/db/client.ts`, `src/db/types.ts`
 - Create: `tests/helpers/test-db.ts`, `tests/db/schema.test.ts`
 - Create: `vitest.config.ts`
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: `db` (Drizzle client), all table objects from `src/db/schema.ts`, and `makeTestDb(): Promise<TestDb>` where `TestDb = { db: DrizzleDb; close: () => Promise<void> }`
+- Produces: `db` (the production Drizzle client), the `Db` handle type from `src/db/types.ts`, all table objects from `src/db/schema.ts`, and `makeTestDb(): Promise<{ db: Db; close: () => Promise<void> }>`
+
+Every later task that takes a database handle types it `Db`. That type is a union of the Neon and PGlite clients, which is precisely what allows production code to be tested against PGlite without either side widening to `any`.
 
 - [ ] **Step 1: Initialize the project and install dependencies**
 
@@ -161,6 +165,22 @@ import * as schema from './schema'
 // DATABASE_URL must be the POOLED (-pooler) Neon endpoint.
 const sql = neon(process.env.DATABASE_URL!)
 export const db = drizzle(sql, { schema })
+```
+
+Create `src/db/types.ts`:
+
+```typescript
+import type { NeonHttpDatabase } from 'drizzle-orm/neon-http'
+import type { PgliteDatabase } from 'drizzle-orm/pglite'
+import type * as schema from './schema'
+
+/**
+ * The database handle every function in this codebase accepts.
+ * A union of the production Neon client and the PGlite client used in tests,
+ * so the same function can be exercised by both without widening to `any`.
+ * Both imports are type-only and are erased at build time.
+ */
+export type Db = NeonHttpDatabase<typeof schema> | PgliteDatabase<typeof schema>
 ```
 
 Create `drizzle.config.ts`:
@@ -495,14 +515,14 @@ import { eq } from 'drizzle-orm'
 import { secrets } from '@/db/schema'
 import { encrypt, decrypt } from './crypto'
 
-export async function putSecret(db: any, key: string, value: string): Promise<void> {
+export async function putSecret(db: Db, key: string, value: string): Promise<void> {
   const { ciphertext, iv, authTag } = encrypt(value)
   await db.insert(secrets)
     .values({ key, ciphertext, iv, authTag })
     .onConflictDoUpdate({ target: secrets.key, set: { ciphertext, iv, authTag } })
 }
 
-export async function getSecret(db: any, key: string): Promise<string | null> {
+export async function getSecret(db: Db, key: string): Promise<string | null> {
   const rows = await db.select().from(secrets).where(eq(secrets.key, key))
   if (rows.length === 0) return null
   const r = rows[0]
@@ -951,7 +971,7 @@ import { eq } from 'drizzle-orm'
 import { accounts, balanceSnapshots, transactions } from '@/db/schema'
 import { normalizeAccountsResponse } from './simplefin'
 
-export async function applySync(db: any, payload: unknown, today: string) {
+export async function applySync(db: Db, payload: unknown, today: string) {
   const normalized = normalizeAccountsResponse(payload)
   const idByExternal = new Map<string, string>()
 
@@ -1296,7 +1316,7 @@ import { eq, desc, and, isNotNull } from 'drizzle-orm'
 import { accounts, balanceSnapshots, manualAssets, syncRuns } from '@/db/schema'
 import type { AccountBalance, ManualAssetValue } from './net-worth'
 
-export async function loadNetWorthInputs(db: any): Promise<{
+export async function loadNetWorthInputs(db: Db): Promise<{
   snapshots: AccountBalance[]
   manual: ManualAssetValue[]
 }> {
@@ -1320,7 +1340,7 @@ export async function loadNetWorthInputs(db: any): Promise<{
   }
 }
 
-export async function lastSuccessfulSync(db: any): Promise<Date | null> {
+export async function lastSuccessfulSync(db: Db): Promise<Date | null> {
   const rows = await db.select().from(syncRuns)
     .where(and(eq(syncRuns.status, 'ok'), isNotNull(syncRuns.finishedAt)))
     .orderBy(desc(syncRuns.finishedAt))
@@ -1350,12 +1370,31 @@ import { formatCents } from '@/lib/money'
 import { NetWorthChart } from '@/components/net-worth-chart'
 import { StalenessBanner } from '@/components/staleness-banner'
 
-function lastNDates(n: number): string[] {
+/**
+ * Chart from the first date we actually have data through today.
+ *
+ * Do NOT chart a fixed trailing window: `netWorthOn` returns 0 for any date
+ * before the first snapshot, so a fixed 90-day window on day one would render
+ * a cliff from $0 up to current net worth and read as real history. History
+ * accrues forward from the first sync — the chart should show only that.
+ */
+function chartDates(
+  snapshots: { date: string }[],
+  manual: { asOf: string }[],
+): string[] {
+  const today = new Date().toISOString().slice(0, 10)
+  const earliest = [
+    ...snapshots.map((s) => s.date),
+    ...manual.map((m) => m.asOf),
+  ].sort()[0]
+  if (!earliest) return [today]
+
   const out: string[] = []
-  for (let i = n - 1; i >= 0; i--) {
-    const d = new Date()
-    d.setUTCDate(d.getUTCDate() - i)
-    out.push(d.toISOString().slice(0, 10))
+  const cursor = new Date(`${earliest}T00:00:00Z`)
+  const end = new Date(`${today}T00:00:00Z`)
+  while (cursor <= end && out.length < 365) {
+    out.push(cursor.toISOString().slice(0, 10))
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
   }
   return out
 }
@@ -1366,7 +1405,7 @@ export default async function DashboardPage() {
   const today = new Date().toISOString().slice(0, 10)
 
   const current = netWorthOn(today, snapshots, manual)
-  const series = netWorthSeries(lastNDates(90), snapshots, manual)
+  const series = netWorthSeries(chartDates(snapshots, manual), snapshots, manual)
 
   return (
     <main className="mx-auto max-w-4xl p-8 space-y-8">
@@ -1497,7 +1536,7 @@ import { eq, desc } from 'drizzle-orm'
 import { manualAssets } from '@/db/schema'
 import { dollarsToCents } from '@/lib/money'
 
-export async function addManualAsset(db: any, input: {
+export async function addManualAsset(db: Db, input: {
   name: string; kind: string; isAsset: boolean; valueDollars: number; asOf: string
 }) {
   await db.insert(manualAssets).values({
@@ -1510,7 +1549,7 @@ export async function addManualAsset(db: any, input: {
 }
 
 /** Appends a new valuation row; never mutates an existing one. */
-export async function revalueManualAsset(db: any, input: {
+export async function revalueManualAsset(db: Db, input: {
   name: string; valueDollars: number; asOf: string
 }) {
   const [prior] = await db.select().from(manualAssets)
@@ -1720,7 +1759,7 @@ Create `src/app/(app)/debts/actions.ts`. Plain module, same rationale as Task 10
 import { debts, goals } from '@/db/schema'
 import { dollarsToCents } from '@/lib/money'
 
-export async function setDebtTerms(db: any, input: {
+export async function setDebtTerms(db: Db, input: {
   accountId: string; aprPercent: number; minimumPaymentDollars: number; targetPayoff: string | null
 }) {
   const values = {
@@ -1735,7 +1774,7 @@ export async function setDebtTerms(db: any, input: {
   })
 }
 
-export async function addGoal(db: any, input: {
+export async function addGoal(db: Db, input: {
   name: string; targetAmountDollars: number; targetDate: string | null; linkedAccountId: string | null
 }) {
   await db.insert(goals).values({
