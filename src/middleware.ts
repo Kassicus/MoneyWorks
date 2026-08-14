@@ -1,6 +1,6 @@
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
 import { NextResponse } from 'next/server'
-import { isAllowedEmail } from '@/lib/auth'
+import { ownerEmail } from '@/lib/auth'
 
 // Exempt from the *Clerk session* check only. Vercel Cron sends no cookies, so
 // `/api/sync` authenticates with the CRON_SECRET bearer token in its own route
@@ -19,8 +19,9 @@ export default clerkMiddleware(async (auth, req) => {
 
   // Requires `email` to be added to the session token claims in the Clerk
   // dashboard; absent the claim this denies everyone, which is the safe failure.
-  const email = (sessionClaims as { email?: string } | null)?.email
-  if (!isAllowedEmail(email)) {
+  // The claim is decoded by `ownerEmail` rather than cast here, so this file and
+  // the dashboard page cannot disagree about what a valid claim looks like.
+  if (!ownerEmail(sessionClaims)) {
     return new NextResponse('Forbidden', { status: 403 })
   }
 })

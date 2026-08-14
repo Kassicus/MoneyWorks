@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { eq } from 'drizzle-orm'
 import { makeTestDb } from '../helpers/test-db'
-import { loadNetWorthInputs, lastSuccessfulSync } from '@/lib/queries'
+import { loadNetWorthInputs, lastSuccessfulSync, hasAnySyncRun } from '@/lib/queries'
 import { netWorthOn } from '@/lib/net-worth'
 import { accounts, balanceSnapshots, manualAssets, syncRuns } from '@/db/schema'
 
@@ -142,6 +142,20 @@ describe('lastSuccessfulSync', () => {
     await close()
   })
 
+  it('counts only status ok, not merely "did not fail"', async () => {
+    const { db, close } = await makeTestDb()
+    await db.insert(syncRuns).values({ status: 'ok', finishedAt: new Date('2026-08-10T09:00:00Z') })
+    // A denylist (`status <> 'error'`) instead of an allowlist (`status = 'ok'`) reads the
+    // same on today's two statuses and silently admits every status added later — 'running',
+    // 'partial', 'skipped'. Only a run that finished and reported success is a successful
+    // sync, so the newer row here must not win.
+    await db.insert(syncRuns).values({ status: 'running', finishedAt: new Date('2026-08-13T09:00:00Z') })
+
+    const at = await lastSuccessfulSync(db)
+    expect(at?.toISOString()).toBe('2026-08-10T09:00:00.000Z')
+    await close()
+  })
+
   it('ignores a run with no finish time, which sorts first under DESC in Postgres', async () => {
     const { db, close } = await makeTestDb()
     await db.insert(syncRuns).values({ status: 'ok', finishedAt: new Date('2026-08-10T09:00:00Z') })
@@ -152,6 +166,40 @@ describe('lastSuccessfulSync', () => {
 
     const at = await lastSuccessfulSync(db)
     expect(at?.toISOString()).toBe('2026-08-10T09:00:00.000Z')
+    await close()
+  })
+})
+
+/**
+ * `lastSuccessfulSync` answers null for two situations that need opposite advice: the cron
+ * has never reached the route (check CRON_SECRET), and the cron is firing but every sync
+ * fails (check the run record). This is what tells them apart.
+ */
+describe('hasAnySyncRun', () => {
+  it('is false when the table is empty — the cron has never reached the route', async () => {
+    const { db, close } = await makeTestDb()
+    expect(await hasAnySyncRun(db)).toBe(false)
+    await close()
+  })
+
+  it('is true when every run so far has failed', async () => {
+    const { db, close } = await makeTestDb()
+    await db.insert(syncRuns).values({
+      status: 'error',
+      error: 'Error: SimpleFIN fetch failed: 403',
+      finishedAt: new Date('2026-08-13T09:00:00Z'),
+    })
+    // The cron is working; SimpleFIN is not. Telling the owner to check CRON_SECRET here
+    // would send them to debug the one part that is running.
+    expect(await hasAnySyncRun(db)).toBe(true)
+    expect(await lastSuccessfulSync(db)).toBeNull()
+    await close()
+  })
+
+  it('is true for a run that started and never finished', async () => {
+    const { db, close } = await makeTestDb()
+    await db.insert(syncRuns).values({ status: 'running' })
+    expect(await hasAnySyncRun(db)).toBe(true)
     await close()
   })
 })

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { isAllowedEmail } from '@/lib/auth'
+import { isAllowedEmail, ownerEmail } from '@/lib/auth'
 
 beforeEach(() => {
   process.env.ALLOWED_EMAIL = 'Owner@Example.com'
@@ -47,5 +47,59 @@ describe('isAllowedEmail', () => {
     // A blank allowlist must never match a blank claim.
     process.env.ALLOWED_EMAIL = '   '
     expect(isAllowedEmail('   ')).toBe(false)
+  })
+})
+
+/**
+ * One decoder for the session token, shared by the middleware and by the dashboard page, so
+ * that the shape of a Clerk claim is asserted in exactly one place. Two copies of a
+ * security-relevant cast drift; one copy is testable against the shapes Clerk can actually
+ * produce.
+ */
+describe('ownerEmail', () => {
+  it('returns the address when the claim is the allowlisted owner', () => {
+    expect(ownerEmail({ email: 'owner@example.com' })).toBe('owner@example.com')
+  })
+
+  it('returns the claim as the token stated it, not a normalised copy', () => {
+    // Trimming and case-folding belong to the comparison, not to the value handed back.
+    expect(ownerEmail({ email: ' OWNER@Example.com ' })).toBe(' OWNER@Example.com ')
+  })
+
+  it('returns null for a signed-in identity that is not the owner', () => {
+    expect(ownerEmail({ email: 'someone@else.com' })).toBeNull()
+  })
+
+  it('returns null when the email claim is missing', () => {
+    // The default Clerk session token has no `email` claim at all: it must be added in the
+    // dashboard. Absent the claim this denies everyone, which is the safe failure.
+    expect(ownerEmail({ sub: 'user_123' })).toBeNull()
+    expect(ownerEmail({})).toBeNull()
+  })
+
+  it('returns null when there are no claims at all', () => {
+    // `sessionClaims` is null when signed out.
+    expect(ownerEmail(null)).toBeNull()
+    expect(ownerEmail(undefined)).toBeNull()
+  })
+
+  it('returns null, rather than throwing, when the email claim is not a string', () => {
+    // A claim template like `{{user.email_addresses}}` yields an array, and a hand-written
+    // one can yield anything. Reaching `.trim()` on it would throw a TypeError inside the
+    // middleware — fail-closed, but as a 500 rather than a decision.
+    expect(ownerEmail({ email: ['owner@example.com'] })).toBeNull()
+    expect(ownerEmail({ email: { address: 'owner@example.com' } })).toBeNull()
+    expect(ownerEmail({ email: 42 })).toBeNull()
+    expect(ownerEmail({ email: null })).toBeNull()
+  })
+
+  it('returns null for a primitive or a string where an object was expected', () => {
+    expect(ownerEmail('owner@example.com')).toBeNull()
+    expect(ownerEmail(42)).toBeNull()
+  })
+
+  it('fails closed when ALLOWED_EMAIL is unset, even for a well-formed claim', () => {
+    delete process.env.ALLOWED_EMAIL
+    expect(ownerEmail({ email: 'owner@example.com' })).toBeNull()
   })
 })

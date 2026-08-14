@@ -67,6 +67,9 @@ export async function loadNetWorthInputs(db: Db): Promise<{
  */
 export async function lastSuccessfulSync(db: Db): Promise<Date | null> {
   const rows = await db.select({ finishedAt: syncRuns.finishedAt }).from(syncRuns)
+    // An allowlist on 'ok', not a denylist on 'error': a denylist reads identically today
+    // and admits every status added later — 'running', 'partial', 'skipped'.
+    //
     // `isNotNull` is load-bearing, not belt-and-braces: `ORDER BY ... DESC` sorts NULLs
     // FIRST in Postgres, so an 'ok' row without a finish time would win the ordering and
     // this would answer null — "never synced" — with good syncs sitting in the table.
@@ -74,4 +77,20 @@ export async function lastSuccessfulSync(db: Db): Promise<Date | null> {
     .orderBy(desc(syncRuns.finishedAt))
     .limit(1)
   return rows[0]?.finishedAt ?? null
+}
+
+/**
+ * Whether the sync has ever run at all, successful or not.
+ *
+ * `lastSuccessfulSync` returns null for two situations that call for opposite advice, and
+ * this separates them. An empty `sync_runs` means no request ever reached `runSyncJob` — the
+ * signature of an unset `CRON_SECRET`, since `/api/sync` rejects the cron at the door, before
+ * the row that would have recorded the failure is written. Rows present but none successful
+ * means the cron is firing and the syncs themselves are failing.
+ *
+ * `id` only. Whether a row exists is the entire question, and `error` stays in the database.
+ */
+export async function hasAnySyncRun(db: Db): Promise<boolean> {
+  const rows = await db.select({ id: syncRuns.id }).from(syncRuns).limit(1)
+  return rows.length > 0
 }
