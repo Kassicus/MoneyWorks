@@ -58,7 +58,17 @@ export function normalizeAccountsResponse(json: unknown): {
   const transactions: NormalizedTransaction[] = []
 
   for (const a of raw.accounts ?? []) {
-    const signed = dollarsToCents(Number(a.balance))
+    const dollars = Number(a.balance)
+    // Not payload validation — an assertion on a value about to become an account row.
+    // `Number.isFinite` is false for a missing or non-numeric balance, and `NaN >= 0` is
+    // false, so without this the account would be written as a *liability* with a NaN
+    // balance: an inverted `isAsset` that can outlive the snapshot insert that rejects the
+    // NaN, depending on the caller's transaction boundary. Names the account, not the
+    // balance, so the message can be logged.
+    if (!Number.isFinite(dollars)) {
+      throw new Error(`SimpleFIN account ${a.id} reported an unusable balance`)
+    }
+    const signed = dollarsToCents(dollars)
     // SimpleFIN reports what you owe as a negative balance. We store liabilities
     // as a positive magnitude and let net worth do the subtracting.
     const isAsset = signed >= 0
@@ -87,12 +97,32 @@ export function normalizeAccountsResponse(json: unknown): {
   return { accounts, transactions }
 }
 
-/** One-time exchange of a setup token for a permanent access URL. */
+/**
+ * One-time exchange of a setup token for a permanent access URL. This POST is the only
+ * write this app ever issues to SimpleFIN.
+ */
 export async function claimAccessUrl(setupToken: string): Promise<string> {
-  const claimUrl = Buffer.from(setupToken, 'base64').toString('utf8')
-  const res = await fetch(claimUrl, { method: 'POST' })
+  // Base64 decoding is lenient, so a corrupt token yields a garbage string rather than an
+  // error, and `fetch` would then throw `Failed to parse URL from <that string>` — putting
+  // the decoded token into the message. Parse it here so the throw is ours and says nothing.
+  const url = parseUrl(Buffer.from(setupToken, 'base64').toString('utf8'), 'setup token')
+  const auth = takeBasicAuth(url)
+  const res = await fetch(url, { method: 'POST', headers: { ...auth } })
   if (!res.ok) throw new Error(`SimpleFIN claim failed: ${res.status}`)
   return (await res.text()).trim()
+}
+
+/**
+ * `new URL()` throws a `TypeError` whose message is clean but which keeps the entire input
+ * in `err.input` — so `console.error(err)` or `JSON.stringify(err)` prints the credential
+ * even though `err.message` looks safe. Re-throw a plain `Error` that carries none of it.
+ */
+function parseUrl(candidate: string, describedAs: string): URL {
+  try {
+    return new URL(candidate)
+  } catch {
+    throw new Error(`SimpleFIN ${describedAs} is malformed`)
+  }
 }
 
 /**
@@ -121,7 +151,7 @@ function takeBasicAuth(url: URL): { Authorization: string } | undefined {
  * carries the status and nothing else.
  */
 export async function fetchAccounts(accessUrl: string, sinceEpochSeconds: number): Promise<unknown> {
-  const url = new URL(`${accessUrl}/accounts`)
+  const url = parseUrl(`${accessUrl}/accounts`, 'access URL')
   url.searchParams.set('start-date', String(sinceEpochSeconds))
   const auth = takeBasicAuth(url)
   const res = await fetch(url, { headers: { Accept: 'application/json', ...auth } })
