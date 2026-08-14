@@ -2,7 +2,17 @@ import {
   pgTable, uuid, text, boolean, date, bigint, integer, timestamp, primaryKey, customType,
 } from 'drizzle-orm/pg-core'
 
-const bytea = customType<{ data: Buffer }>({ dataType: () => 'bytea' })
+// Neon returns `bytea` as a Buffer; PGlite returns a Uint8Array. `fromDriver` normalises
+// both to Buffer so the `data: Buffer` annotation is true on either driver — code that
+// reads these columns (secrets decryption) can rely on Buffer methods in tests and in prod.
+const bytea = customType<{ data: Buffer }>({
+  dataType: () => 'bytea',
+  fromDriver: (value: unknown): Buffer => {
+    if (Buffer.isBuffer(value)) return value
+    if (value instanceof Uint8Array) return Buffer.from(value)
+    throw new TypeError(`Expected bytea as Buffer or Uint8Array, got ${typeof value}`)
+  },
+})
 
 export const accounts = pgTable('accounts', {
   id: uuid('id').primaryKey().defaultRandom(),
