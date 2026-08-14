@@ -137,6 +137,12 @@ secrets
   auth_tag          bytea
 ```
 
+### Money representation
+
+All monetary values are stored and manipulated as **integer cents** (`bigint` in Postgres, `number` in TypeScript), never as decimals or floats. Formatting to dollars happens only at the render boundary. This makes floating-point drift in net worth sums, amortization, and savings-rate math structurally impossible rather than merely unlikely.
+
+The `numeric(14,2)` columns shown below are therefore `bigint` in the implementation; the schema listing keeps the semantic intent.
+
 ### Sign conventions
 
 Balances are **normalized at ingest**: a liability account (`is_asset = false`) stores a positive magnitude of the amount owed, regardless of the sign SimpleFIN reports for it. Net worth subtracts those. Transaction `amount` keeps its natural sign — negative is money leaving the account.
