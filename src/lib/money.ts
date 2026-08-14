@@ -11,5 +11,7 @@ export function centsToDollars(cents: number): number {
 const USD = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })
 
 export function formatCents(cents: number): string {
-  return USD.format(centsToDollars(cents))
+  // `+ 0` normalises -0 to +0, so a computed zero (e.g. -totalDebt when the total is
+  // zero) renders "$0.00" rather than "-$0.00".
+  return USD.format(centsToDollars(cents) + 0)
 }
