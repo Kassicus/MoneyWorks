@@ -1,0 +1,26 @@
+# Agent scratch — worktrees and subagent-driven-development workspaces
+.claude/worktrees/
+.superpowers/
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Next.js
+.next/
+out/
+build/
+next-env.d.ts
+
+# Environment — never commit real credentials
+.env
+.env*.local
+
+# Vercel
+.vercel
+
+# Misc
+.DS_Store
+*.tsbuildinfo
+coverage/
