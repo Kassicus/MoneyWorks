@@ -24,10 +24,15 @@ export const accounts = pgTable('accounts', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 })
 
+// A snapshot is a historical record and must describe itself completely: `balance` is an
+// unsigned magnitude, so the sign has to travel with the row. Reading it from `accounts`
+// instead would mean a card refunded into credit — `is_asset` flipping to true today —
+// retroactively adds every balance it used to subtract, silently rewriting past net worth.
 export const balanceSnapshots = pgTable('balance_snapshots', {
   accountId: uuid('account_id').notNull().references(() => accounts.id),
   date: date('date').notNull(),
   balance: bigint('balance', { mode: 'number' }).notNull(),
+  isAsset: boolean('is_asset').notNull(),
 }, (t) => ({ pk: primaryKey({ columns: [t.accountId, t.date] }) }))
 
 export const transactions = pgTable('transactions', {

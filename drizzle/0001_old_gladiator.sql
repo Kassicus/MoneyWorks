@@ -1,0 +1,1 @@
+ALTER TABLE "balance_snapshots" ADD COLUMN "is_asset" boolean NOT NULL;

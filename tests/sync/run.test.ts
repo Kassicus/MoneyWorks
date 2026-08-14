@@ -53,9 +53,13 @@ describe('applySync', () => {
       revised.accounts[0].balance = '2000.00'
       await applySync(db, revised, '2026-08-13')
 
+      // By account, not `some`: a revision that landed on the *other* account's snapshot
+      // satisfies "some row reads 200000" while putting the checking balance on the card.
+      const checking = (await db.select().from(accounts))
+        .find((a) => a.simplefinId === 'acct-checking')!
       const rows = await db.select().from(balanceSnapshots)
       expect(rows).toHaveLength(2)
-      expect(rows.some((r) => r.balance === 200000)).toBe(true)
+      expect(rows.find((r) => r.accountId === checking.id)!.balance).toBe(200000)
     } finally {
       await close()
     }
@@ -142,6 +146,44 @@ describe('applySync', () => {
       expect(visa.name).toBe('Visa Signature (Closed)')
       expect(visa.isAsset).toBe(true)
       expect(visa.type).toBe('asset')
+      // Same date, so this revises the day's existing snapshot — and a revised balance can
+      // change what the balance *means*, so both fields have to move together. Updating
+      // only `balance` would leave today reading 25.00 of debt.
+      const snapshot = (await db.select().from(balanceSnapshots))
+        .find((s) => s.accountId === visa.id && s.date === '2026-08-13')!
+      expect(snapshot.balance).toBe(2500)
+      expect(snapshot.isAsset).toBe(true)
+    } finally {
+      await close()
+    }
+  })
+
+  // The account's classification is current state; a snapshot is a historical record, and a
+  // historical record must not change meaning when current state does. `netWorthOn` negates
+  // every non-asset row, so if the sign came from the account, a card refunded into credit
+  // would flip `isAsset` and retroactively *add* every past balance it used to subtract —
+  // an $1,784.20 swing on every historical date for this fixture, with nothing crashing.
+  // Hence the snapshot carries its own `isAsset`, frozen at write time.
+  it('freezes each snapshot classification, so a later flip does not re-sign history', async () => {
+    const { db, close } = await makeTestDb()
+    try {
+      await applySync(db, fixture, '2026-08-13') // acct-visa owes 892.10
+
+      const paidOff = structuredClone(fixture)
+      paidOff.accounts[1].balance = '50.00' // refunded past zero: now in credit
+      await applySync(db, paidOff, '2026-08-20')
+
+      const visa = (await db.select().from(accounts))
+        .find((a) => a.simplefinId === 'acct-visa')!
+      const history = (await db.select().from(balanceSnapshots))
+        .filter((s) => s.accountId === visa.id)
+        .sort((a, b) => a.date.localeCompare(b.date))
+
+      expect(visa.isAsset).toBe(true) // present classification follows the present balance
+      expect(history).toEqual([
+        { accountId: visa.id, date: '2026-08-13', balance: 89210, isAsset: false },
+        { accountId: visa.id, date: '2026-08-20', balance: 5000, isAsset: true },
+      ])
     } finally {
       await close()
     }

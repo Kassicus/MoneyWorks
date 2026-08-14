@@ -27,6 +27,8 @@
  *
  * The three conflict policies differ on purpose:
  * - accounts: **update** — a name or a classification can change upstream and should refresh.
+ *   That refresh is *current* state only; see the snapshot's own `isAsset` below for why
+ *   moving it must not move the past with it.
  * - snapshots: **update** — the same day's balance can be revised by a later run that day.
  * - transactions: **do nothing** — a posted transaction is immutable; re-seeing it must not
  *   rewrite what was recorded the first time.
@@ -63,12 +65,17 @@ export async function applySync(
     idByExternal.set(a.simplefinId, row.id)
 
     // `a.balance` is a positive magnitude even for a liability — the sign lives in
-    // `isAsset`, and `netWorthOn` does the subtracting.
+    // `isAsset`, and `netWorthOn` does the subtracting. That `isAsset` is written *onto the
+    // snapshot*, not read back from the account later: the account row holds the current
+    // classification and it moves, so sourcing the sign from it would let a card refunded
+    // into credit retroactively add every balance it used to subtract. Both fields are
+    // revised together on a same-day re-run, because a revised balance can change the
+    // classification with it.
     await db.insert(balanceSnapshots)
-      .values({ accountId: row.id, date: today, balance: a.balance })
+      .values({ accountId: row.id, date: today, balance: a.balance, isAsset: a.isAsset })
       .onConflictDoUpdate({
         target: [balanceSnapshots.accountId, balanceSnapshots.date],
-        set: { balance: a.balance },
+        set: { balance: a.balance, isAsset: a.isAsset },
       })
   }
 
@@ -76,8 +83,13 @@ export async function applySync(
   // loop put in the map. Nothing here is worth batching — this is one person's accounts.
   for (const t of normalized.transactions) {
     const accountId = idByExternal.get(t.simplefinAccountId)
-    // Skip rather than throw: an orphan transaction is not worth failing a whole run over,
-    // and the account row it needs would arrive with the next payload that carries it.
+    // Defensive, and unreachable today: `normalizeAccountsResponse` only ever emits a
+    // transaction from inside the loop body of an account it has already emitted, so the
+    // map always holds the key. Nothing is being dropped here now — do not read this
+    // `continue` as evidence that transactions go missing. If normalization ever grows a
+    // path that skips an account but keeps its transactions, skipping is still the right
+    // answer (one orphan should not fail a whole run), but this branch would then need a
+    // signal, because a silent `continue` is the one path here that reports nothing.
     if (!accountId) continue
     await db.insert(transactions)
       .values({

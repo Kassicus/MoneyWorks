@@ -11,12 +11,16 @@ describe('schema', () => {
         .returning()
 
       await db.insert(balanceSnapshots)
-        .values({ accountId: acct.id, date: '2026-08-13', balance: 123456 })
+        .values({ accountId: acct.id, date: '2026-08-13', balance: 123456, isAsset: true })
 
       const rows = await db.select().from(balanceSnapshots)
       expect(rows).toHaveLength(1)
       expect(rows[0].balance).toBe(123456)
       expect(typeof rows[0].balance).toBe('number')
+      // The snapshot carries its own sign. `balance` is an unsigned magnitude, so a row
+      // that had to ask `accounts` what it meant would change meaning whenever the account
+      // was reclassified — retroactively re-signing history.
+      expect(rows[0].isAsset).toBe(true)
     } finally {
       await close()
     }

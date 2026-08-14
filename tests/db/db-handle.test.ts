@@ -21,12 +21,14 @@ async function createAccount(db: Db, name: string) {
   return row
 }
 
+// `isAsset` travels with the snapshot rather than being read back from the account: the
+// account's classification is current state and moves, the snapshot is history and must not.
 async function upsertSnapshot(db: Db, accountId: string, date: string, balance: number) {
   await db.insert(balanceSnapshots)
-    .values({ accountId, date, balance })
+    .values({ accountId, date, balance, isAsset: true })
     .onConflictDoUpdate({
       target: [balanceSnapshots.accountId, balanceSnapshots.date],
-      set: { balance },
+      set: { balance, isAsset: true },
     })
 }
 
