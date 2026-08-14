@@ -1,0 +1,22 @@
+{
+  "accounts": [
+    {
+      "id": "acct-checking",
+      "name": "Everyday Checking",
+      "currency": "USD",
+      "balance": "1543.27",
+      "transactions": [
+        { "id": "txn-1", "posted": 1786000000, "amount": "-45.50", "description": "COFFEE ROASTERS" }
+      ]
+    },
+    {
+      "id": "acct-visa",
+      "name": "Visa Signature",
+      "currency": "USD",
+      "balance": "-892.10",
+      "transactions": [
+        { "id": "txn-2", "posted": 1786100000, "amount": "-120.00", "description": "HARDWARE STORE" }
+      ]
+    }
+  ]
+}
