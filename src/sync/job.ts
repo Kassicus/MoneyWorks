@@ -24,12 +24,21 @@ import { applySync } from '@/sync/run'
  *
  * ## Nothing that touches a credential may reach an error string
  *
- * `sync_runs.error` and the returned `error` are read by a human and rendered by the
- * dashboard. The access URL and the setup token are credentials for the owner's entire
- * financial history. `String(err)` reads only `name` and `message`, both of which the
- * SimpleFIN client keeps scrubbed; logging or storing the error *object* would print
- * `err.input` — the full credentialed URL — which is exactly the leak the client was
- * rewritten to close. Store the string. Never the object.
+ * `sync_runs.error` is stored for whoever queries the table directly, and the returned
+ * `error` becomes the JSON body of `/api/sync` — what a manual `curl` of the route prints.
+ *
+ * Neither is rendered by the dashboard, and that is deliberate rather than an oversight to
+ * be tidied up: `lastSuccessfulSync` selects `finished_at` and nothing else, because
+ * drizzle's error messages embed the failing SQL statement together with its bound
+ * parameters — account names, transaction descriptions. The staleness banner says where to
+ * look instead of quoting it. Do not "improve" that query by selecting `error`; the
+ * omission is the guard.
+ *
+ * The access URL and the setup token are credentials for the owner's entire financial
+ * history. `String(err)` reads only `name` and `message`, both of which the SimpleFIN client
+ * keeps scrubbed; logging or storing the error *object* would print `err.input` — the full
+ * credentialed URL — which is exactly the leak the client was rewritten to close. Store the
+ * string. Never the object.
  */
 
 const OVERLAP_SECONDS = 7 * 24 * 60 * 60

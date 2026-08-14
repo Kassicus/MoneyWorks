@@ -174,13 +174,16 @@ export async function revalueManualAsset(db: Db, input: {
  * shows and the figure the dashboard counts agree on which valuation is current.
  *
  * On a *full* tie — same `as_of` and same `created_at` — the two do diverge: this keeps the
- * first such row of the loaded order, while `latestOnOrBefore` keeps the last. Unreachable
- * today, because `now()` is microsecond-resolution and each write here is its own transaction,
- * so no two rows can share a `created_at`. It stops being unreachable the moment two writes
- * are wrapped in one `db.transaction`: Postgres `now()` is the *transaction* timestamp, so
- * both rows would be stamped identically. Left as is rather than aligned, because a full tie
- * is undecidable from the data — the rows carry nothing else that orders them — and the fix
- * belongs wherever that transaction is introduced.
+ * first such row of the loaded order, while `latestOnOrBefore` keeps the last. Unreachable in
+ * production, because `now()` is microsecond-resolution *in production Postgres* and each
+ * write here is its own transaction, so no two rows can share a `created_at`. That is a claim
+ * about the production driver only: PGlite's `now()` is millisecond-resolution, which is
+ * exactly why `tests/app/assets-actions.test.ts` pauses 5 ms between two writes whose tiebreak
+ * it means to test. The tie also stops being unreachable the moment two writes are wrapped in
+ * one `db.transaction`: Postgres `now()` is the *transaction* timestamp, so both rows would be
+ * stamped identically. Left as is rather than aligned, because a full tie is undecidable from
+ * the data — the rows carry nothing else that orders them — and the fix belongs wherever that
+ * transaction is introduced.
  *
  * Valuations dated in the future are *not* filtered out. They do not count towards net worth
  * until their date arrives, but the asset must still appear here — it is the only place the

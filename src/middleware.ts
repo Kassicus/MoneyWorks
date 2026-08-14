@@ -31,15 +31,23 @@ export const config = {
   // URLs Next serves for app pages (`/dashboard.rsc`, `/dashboard.segments/…`,
   // `/_next/data/…json`) — i.e. the rendered page data, reachable without the
   // allowlist check. So the exclusion is an explicit list of static-asset
-  // extensions (Clerk's documented matcher) instead. Everything that renders or
-  // returns app data is covered; only build output and static files are not.
+  // extensions instead. Everything that renders or returns app data is covered;
+  // only build output and static files are not.
   //
-  // Clerk's list also excludes csv/doc/xls/zip, which this app never serves as
-  // static files — but might one day serve as an export route. Excluding them
-  // would put /transactions.csv outside the boundary silently, so they are not
-  // excluded here. Only extensions actually present in the build or public/.
+  // The list is short because **every extension in it is a suffix that puts a
+  // path outside the auth boundary**, and nothing warns when one starts
+  // matching something real: Clerk's documented matcher excludes csv/doc/xls/
+  // zip, so an export route added later at `/transactions.csv` would serve the
+  // owner's transactions to anyone, with nothing in that diff to say so. The
+  // same argument retires html/jpeg/webp/png/gif/ttf/woff2/webmanifest, none of
+  // which this app serves either — an unused exclusion is a hole waiting for a
+  // file, not a spare part.
+  //
+  // What is actually served statically: `public/` holds five `.svg` files, and
+  // `src/app/favicon.ico` is served at `/favicon.ico`. Built CSS and JS live
+  // under `/_next/static/`, which the `_next` alternative already excludes.
   matcher: [
-    '/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|webmanifest)).*)',
+    '/((?!_next|[^?]*\\.(?:svg|ico)).*)',
     '/api(.*)',
   ],
 }
