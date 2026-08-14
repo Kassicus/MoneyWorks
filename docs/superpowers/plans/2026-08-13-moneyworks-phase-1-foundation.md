@@ -1133,7 +1133,18 @@ export default clerkMiddleware(async (auth, req) => {
 })
 
 export const config = {
-  matcher: ['/((?!_next|.*\\..*).*)', '/api/(.*)'],
+  // Do NOT use the common `'/((?!_next|.*\\..*).*)'` matcher here. Excluding every
+  // path containing a dot also excludes the RSC payload URLs Next serves for app
+  // pages (`/dashboard.rsc`, `/dashboard.segments/….segment.rsc`,
+  // `/_next/data/….json`) — the rendered page data. Under Vercel's minimal mode
+  // those URLs render the page and return its payload, so the middleware would
+  // never run and the dashboard's financial data would be reachable unauthenticated.
+  // It reproduces ONLY in production: locally `next dev` 404s those paths, so a
+  // manual browser check cannot find it.
+  matcher: [
+    '/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)',
+    '/api(.*)',
+  ],
 }
 ```
 
