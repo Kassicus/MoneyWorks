@@ -16,7 +16,7 @@
 import { asc, eq } from 'drizzle-orm'
 import { accounts, debts, goals } from '@/db/schema'
 import type { Db } from '@/db/types'
-import { dollarsToCents } from '@/lib/money'
+import { dollarsToCents, percentToBps } from '@/lib/money'
 import { loadNetWorthInputs } from '@/lib/queries'
 
 /**
@@ -78,15 +78,23 @@ export async function addGoal(db: Db, input: {
 /**
  * A rate in integer basis points, or a thrown error.
  *
- * `NaN` is what `Number(formData.get('apr'))` yields for an empty or junk field, and
+ * `NaN` is what `Number(formData.get('apr'))` yields for a field holding junk *text*, and
  * `Math.round(NaN)` is `NaN`, which reaches Postgres as an unhelpful driver error on an
  * integer column. A negative APR is a loan that pays the borrower.
+ *
+ * It does **not** catch a blank field, and no guard of this shape anywhere in the codebase
+ * does: `Number('')`, `Number(null)` and `Number('  ')` are all **0**, not NaN, so a blank
+ * arrives here as a perfectly finite, non-negative zero and is stored as a 0.00% loan. That is
+ * stopped one layer out, at the form boundary, by `requiredNumber` in `lib/form.ts` — which is
+ * the only layer that can still tell a blank field from a zero somebody typed.
  */
 function rateBps(aprPercent: number): number {
   if (!Number.isFinite(aprPercent) || aprPercent < 0) {
     throw new Error(`An APR must be a non-negative percentage, not ${aprPercent}.`)
   }
-  return Math.round(aprPercent * 100)
+  // Rounded to the nearest basis point because the column is an integer: 6.875% stores as 688.
+  // Sub-basis-point precision is not representable and is not preserved.
+  return percentToBps(aprPercent)
 }
 
 /** A minimum payment in integer cents, or a thrown error. Same two failures as `rateBps`. */

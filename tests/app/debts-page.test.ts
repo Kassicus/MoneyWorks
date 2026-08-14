@@ -77,6 +77,21 @@ function formActions(node: unknown): Action[] {
     .filter((a): a is Action => typeof a === 'function')
 }
 
+/**
+ * Every `<input>` in the tree, keyed by its `name`.
+ *
+ * `textOf` and `textByKey` walk `props.children`, so neither of them can see a `defaultValue` —
+ * which makes the prefilled form the one boundary on this page that renders storage integers
+ * with nothing watching. It is also the more dangerous of the two boundaries, because a form
+ * value is not merely displayed: the owner edits one field, presses Save, and every other
+ * prefilled box is written straight back into the database.
+ */
+function inputsByName(node: unknown): Record<string, Record<string, unknown>> {
+  return Object.fromEntries(
+    findAll(node, 'input').map((el) => [String(el.props?.name), el.props ?? {}]),
+  )
+}
+
 const asOwner = () => auth.mockResolvedValue({ sessionClaims: { email: 'owner@example.com' } })
 
 const form = (entries: Record<string, string>) => {
@@ -184,6 +199,64 @@ describe('the debts page renders money as dollars and rates as percentages', () 
   })
 
   /** A missing APR shown as 0.00% is a claim that the owner borrows for free. */
+  /**
+   * The second rate boundary, and the second money one: the prefilled terms form. Basis points
+   * in the APR box read as a 525% loan *and* get stored as one on the next unrelated edit.
+   */
+  it('prefills the terms form in the units the form submits, not in stored integers', async () => {
+    asOwner()
+
+    const inputs = inputsByName(await DebtsPage())
+
+    expect(inputs.apr.defaultValue).toBe(5.25)
+    expect(inputs.apr.defaultValue).not.toBe(525)
+    expect(inputs.minimum.defaultValue).toBe(412.5)
+    expect(inputs.minimum.defaultValue).not.toBe(41250)
+    expect(inputs.targetPayoff.defaultValue).toBe('2029-06-01')
+    // The hidden field addresses the row the write lands on. The account's *name* here posts
+    // terms against something that is not an id at all.
+    expect(inputs.accountId.value).toBe('acct-car')
+  })
+
+  /**
+   * The harm those defaults cause, end to end, as the owner meets it: open `/debts`, change
+   * only the payoff date, press Save. Everything else is posted back exactly as it was
+   * prefilled — so if the boxes hold stored integers, saving multiplies the APR and the
+   * payment by a hundred, and does it again on every subsequent save.
+   */
+  it('re-saves untouched fields unchanged instead of multiplying them by a hundred', async () => {
+    asOwner()
+    const tree = await DebtsPage()
+    const inputs = inputsByName(tree)
+    const [saveTerms] = formActions(tree)
+
+    await saveTerms(form({
+      accountId: String(inputs.accountId.value),
+      apr: String(inputs.apr.defaultValue),
+      minimum: String(inputs.minimum.defaultValue),
+      targetPayoff: '2030-01-01', // the one field the owner actually touched
+    }))
+
+    expect(setDebtTerms).toHaveBeenCalledWith(expect.anything(), {
+      accountId: 'acct-car',
+      aprPercent: 5.25,
+      minimumPaymentDollars: 412.5,
+      targetPayoff: '2030-01-01',
+    })
+  })
+
+  it('leaves the terms form empty for a debt that has none, rather than prefilling zeroes', async () => {
+    asOwner()
+    loadDebtsAndGoals.mockResolvedValue(loaded({ debts: [{ ...carLoan, terms: null }] }))
+
+    const inputs = inputsByName(await DebtsPage())
+
+    // Not `0`: a zero in the box is a 0.00% APR one keystroke away from being saved as fact.
+    expect(inputs.apr.defaultValue).toBe('')
+    expect(inputs.minimum.defaultValue).toBe('')
+    expect(inputs.targetPayoff.defaultValue).toBe('')
+  })
+
   it('says no terms are set rather than showing a zero rate', async () => {
     asOwner()
     loadDebtsAndGoals.mockResolvedValue(loaded({ debts: [{ ...carLoan, terms: null }] }))
@@ -201,8 +274,10 @@ describe('the debts page renders goal progress', () => {
 
     const text = textByKey(await DebtsPage(), 'li')['goal-ef']
 
-    expect(text).toContain('$6,000.00')
-    expect(text).toContain('$15,000.00')
+    // One substring, not two independent `toContain`s: asserted separately, swapping the two
+    // `formatCents` calls renders "$15,000.00 / $6,000.00 (40%)" — a goal 250% overshot,
+    // reported as 40% — and both assertions still pass.
+    expect(text).toContain('$6,000.00 / $15,000.00')
     expect(text).not.toContain('600000')
     expect(text).not.toContain('1500000')
     // $6,000 of $15,000. Divided the other way up it reads 250% — a goal already smashed.
@@ -376,6 +451,58 @@ describe('the debts page’s Server Actions check the caller too', () => {
     expect(addGoal).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       targetDate: null, linkedAccountId: null,
     }))
+  })
+
+  /**
+   * `Number('')` is **0**, not NaN — as are `Number(null)` and `Number('  ')`. Only junk text
+   * is NaN. So every guard of the form "refuse NaN and negatives" waves a blank field through
+   * as a legitimate zero, and a blank APR box is stored as a 0.00% loan with a $0.00 minimum
+   * payment: the exact line this page reserves for a debt whose terms have never been set.
+   * The distinction between "blank" and "zero" only survives at the form boundary, so that is
+   * where it has to be made.
+   */
+  it('refuses a blank APR or payment rather than storing a 0.00% loan', async () => {
+    asOwner()
+    const [saveTerms] = formActions(await DebtsPage())
+    const filled = { accountId: 'acct-car', apr: '5.25', minimum: '412.50' }
+
+    await expect(saveTerms(form({ ...filled, apr: '' }))).rejects.toThrow(/APR is required/i)
+    await expect(saveTerms(form({ ...filled, apr: '   ' }))).rejects.toThrow(/APR is required/i)
+    await expect(saveTerms(form({ ...filled, minimum: '' })))
+      .rejects.toThrow(/minimum payment is required/i)
+    // A POST that simply omits the field, which no browser sends but any client may.
+    await expect(saveTerms(form({ apr: '5.25', minimum: '412.50' })))
+      .rejects.toThrow(/account is required/i)
+
+    expect(setDebtTerms).not.toHaveBeenCalled()
+  })
+
+  it('still accepts a zero the owner typed on purpose', async () => {
+    asOwner()
+    const [saveTerms] = formActions(await DebtsPage())
+
+    // An interest-free loan is real — a 0% car finance deal, a family loan. The rule is
+    // "filled in", not "non-zero", and conflating the two would refuse a legitimate entry.
+    await saveTerms(form({ accountId: 'acct-car', apr: '0', minimum: '250' }))
+
+    expect(setDebtTerms).toHaveBeenCalledWith(expect.anything(),
+      expect.objectContaining({ aprPercent: 0, minimumPaymentDollars: 250 }))
+  })
+
+  it('refuses a goal with a blank name or target rather than inventing one', async () => {
+    asOwner()
+    const [, createGoal] = formActions(await DebtsPage())
+
+    await expect(createGoal(form({ name: '', target: '15000' })))
+      .rejects.toThrow(/goal name is required/i)
+    await expect(createGoal(form({ name: 'Emergency fund', target: '' })))
+      .rejects.toThrow(/target amount is required/i)
+    // `String(formData.get('name'))` on an absent field is the four characters "null" — a
+    // goal named after a JavaScript value.
+    await expect(createGoal(form({ target: '15000' })))
+      .rejects.toThrow(/goal name is required/i)
+
+    expect(addGoal).not.toHaveBeenCalled()
   })
 
   /**

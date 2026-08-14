@@ -2,6 +2,7 @@ import { auth } from '@clerk/nextjs/server'
 import { revalidatePath } from 'next/cache'
 import { db } from '@/db/client'
 import { ownerEmail } from '@/lib/auth'
+import { requiredNumber, requiredText } from '@/lib/form'
 import { formatCents } from '@/lib/money'
 import { addManualAsset, latestManualAssets, revalueManualAsset } from './actions'
 
@@ -42,13 +43,17 @@ export default async function AssetsPage() {
     // stable id: it is invoked directly, without this component body running again, so the
     // gate that guarded the render does not guard the write.
     await requireOwner()
+    // `requiredNumber`, never a bare `Number(formData.get('value'))`: `Number('')` is 0, not
+    // NaN, so a blank value field slips past `valuationCents` — which refuses NaN and
+    // negatives — as a legitimate zero, and appends a house worth $0.00 to a store with no
+    // delete and no edit. See `lib/form.ts`.
     await addManualAsset(db, {
-      name: String(formData.get('name')),
-      kind: String(formData.get('kind')),
+      name: requiredText(formData, 'name', 'A name'),
+      kind: requiredText(formData, 'kind', 'A kind'),
       // An unticked checkbox is absent from the payload entirely, not present-and-false.
       isAsset: formData.get('isAsset') === 'on',
-      valueDollars: Number(formData.get('value')),
-      asOf: String(formData.get('asOf')),
+      valueDollars: requiredNumber(formData, 'value', 'A value'),
+      asOf: requiredText(formData, 'asOf', 'An as-of date'),
     })
     revalidatePath('/assets')
   }
@@ -60,9 +65,9 @@ export default async function AssetsPage() {
     // from the prior row, so a revaluation cannot turn an asset into a liability and move net
     // worth by twice its value.
     await revalueManualAsset(db, {
-      name: String(formData.get('name')),
-      valueDollars: Number(formData.get('value')),
-      asOf: String(formData.get('asOf')),
+      name: requiredText(formData, 'name', 'A name'),
+      valueDollars: requiredNumber(formData, 'value', 'A value'),
+      asOf: requiredText(formData, 'asOf', 'An as-of date'),
     })
     revalidatePath('/assets')
   }

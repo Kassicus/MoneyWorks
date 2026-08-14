@@ -228,6 +228,48 @@ describe('the manual assets page’s Server Actions check the caller too', () =>
       expect.objectContaining({ name: 'Mortgage', isAsset: false }))
   })
 
+  /**
+   * `Number('')` is **0**, not NaN — as are `Number(null)` and `Number('  ')`. `valuationCents`
+   * refuses NaN and negatives, which is the whole of what a blank field is *not*: it arrives as
+   * a finite, non-negative zero and is stored. The result is a house appended at $0.00 to a
+   * table with no delete and no edit, understating net worth by its entire value until it is
+   * revalued. The blank can only be told from a deliberate zero at the form boundary, which is
+   * where `requiredNumber` makes the distinction.
+   *
+   * Found by the Task 11 review, which spotted the identical shape one directory over; fixed
+   * here rather than left as a known instance.
+   */
+  it('refuses a blank value rather than appending an asset worth $0.00', async () => {
+    asOwner()
+    const [create, revalue] = formActions(await AssetsPage())
+    const filled = { name: 'House', kind: 'property', value: '400000', asOf: '2026-01-01' }
+
+    await expect(create(form({ ...filled, value: '' }))).rejects.toThrow(/value is required/i)
+    await expect(create(form({ ...filled, value: '   ' }))).rejects.toThrow(/value is required/i)
+    await expect(revalue(form({ name: 'House', value: '', asOf: '2026-07-01' })))
+      .rejects.toThrow(/value is required/i)
+    // An absent name is `String(null)` — the four characters "null" — which `addManualAsset`
+    // would happily accept as a name, since it is neither blank nor a duplicate.
+    await expect(create(form({ kind: 'property', value: '400000', asOf: '2026-01-01' })))
+      .rejects.toThrow(/name is required/i)
+    await expect(create(form({ ...filled, asOf: '' }))).rejects.toThrow(/as-of date is required/i)
+
+    expect(addManualAsset).not.toHaveBeenCalled()
+    expect(revalueManualAsset).not.toHaveBeenCalled()
+  })
+
+  it('still accepts a zero valuation the owner typed on purpose', async () => {
+    asOwner()
+    const [create] = formActions(await AssetsPage())
+
+    // A written-off car is worth $0 and there is no delete, so revaluing to zero is the only
+    // way to say so. The rule is "filled in", not "non-zero".
+    await create(form({ name: 'Car', kind: 'vehicle', value: '0', asOf: '2026-01-01' }))
+
+    expect(addManualAsset).toHaveBeenCalledWith(expect.anything(),
+      expect.objectContaining({ valueDollars: 0 }))
+  })
+
   it('revalues without offering kind or the asset flag', async () => {
     asOwner()
     const [, revalue] = formActions(await AssetsPage())

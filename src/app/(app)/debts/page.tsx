@@ -2,7 +2,8 @@ import { auth } from '@clerk/nextjs/server'
 import { revalidatePath } from 'next/cache'
 import { db } from '@/db/client'
 import { ownerEmail } from '@/lib/auth'
-import { centsToDollars, formatCents } from '@/lib/money'
+import { optionalText, requiredNumber, requiredText } from '@/lib/form'
+import { bpsToPercent, centsToDollars, formatCents } from '@/lib/money'
 import { addGoal, loadDebtsAndGoals, setDebtTerms } from './actions'
 
 /**
@@ -48,14 +49,16 @@ export default async function DebtsPage() {
     // stable id: it is invoked directly, without this component body running again, so the
     // gate that guarded the render does not guard the write.
     await requireOwner()
-    // An untouched `<input type="date">` submits the empty string, which reaches a `date`
-    // column as a driver error rather than as "no target".
-    const payoff = String(formData.get('targetPayoff') ?? '')
+    // `requiredNumber`, never a bare `Number(formData.get(…))`: `Number('')` is 0, so a blank
+    // APR field would store a 0.00% loan with a $0.00 minimum payment — the exact display this
+    // page reserves for "no terms set". See `lib/form.ts`.
     await setDebtTerms(db, {
-      accountId: String(formData.get('accountId')),
-      aprPercent: Number(formData.get('apr')),
-      minimumPaymentDollars: Number(formData.get('minimum')),
-      targetPayoff: payoff || null,
+      accountId: requiredText(formData, 'accountId', 'An account'),
+      aprPercent: requiredNumber(formData, 'apr', 'An APR'),
+      minimumPaymentDollars: requiredNumber(formData, 'minimum', 'A minimum payment'),
+      // Optional, and an untouched `<input type="date">` submits "", which reaches a `date`
+      // column as a driver error rather than as "no target".
+      targetPayoff: optionalText(formData, 'targetPayoff'),
     })
     revalidatePath('/debts')
   }
@@ -63,13 +66,11 @@ export default async function DebtsPage() {
   async function createGoal(formData: FormData) {
     'use server'
     await requireOwner()
-    const date = String(formData.get('targetDate') ?? '')
-    const linked = String(formData.get('linkedAccountId') ?? '')
     await addGoal(db, {
-      name: String(formData.get('name')),
-      targetAmountDollars: Number(formData.get('target')),
-      targetDate: date || null,
-      linkedAccountId: linked || null,
+      name: requiredText(formData, 'name', 'A goal name'),
+      targetAmountDollars: requiredNumber(formData, 'target', 'A target amount'),
+      targetDate: optionalText(formData, 'targetDate'),
+      linkedAccountId: optionalText(formData, 'linkedAccountId'),
     })
     revalidatePath('/debts')
   }
@@ -97,15 +98,20 @@ export default async function DebtsPage() {
                 </div>
                 <div className="text-sm text-neutral-500">
                   {d.terms
-                    ? `${(d.terms.aprBps / 100).toFixed(2)}% APR · minimum ` +
+                    ? `${bpsToPercent(d.terms.aprBps).toFixed(2)}% APR · minimum ` +
                       `${formatCents(d.terms.minimumPayment)}` +
                       `${d.terms.targetPayoff ? ` · pay off by ${d.terms.targetPayoff}` : ''}`
                     : 'No terms set'}
                 </div>
+                {/* Every prefilled value here is a *storage* boundary as well as a display
+                    one: the owner opens the page, edits one field, presses Save, and whatever
+                    was prefilled in the others is written back. A raw `aprBps` in the APR box
+                    would re-save 525 as 52,500 basis points — a 525% loan — on the first
+                    unrelated edit. Same conversions as the line above, and no exceptions. */}
                 <form action={saveTerms} className="mt-2 grid grid-cols-4 gap-2">
                   <input type="hidden" name="accountId" value={d.accountId} />
                   <input name="apr" type="number" step="0.01" min="0" placeholder="APR %"
-                         required defaultValue={d.terms ? d.terms.aprBps / 100 : ''}
+                         required defaultValue={d.terms ? bpsToPercent(d.terms.aprBps) : ''}
                          className="rounded border p-1 text-sm" />
                   <input name="minimum" type="number" step="0.01" min="0" placeholder="Min payment"
                          required
