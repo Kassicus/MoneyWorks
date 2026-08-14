@@ -96,6 +96,26 @@ export async function claimAccessUrl(setupToken: string): Promise<string> {
 }
 
 /**
+ * Moves any credentials out of `url`'s userinfo and into a basic-auth header, mutating
+ * `url` to drop them. Returns the headers to merge, or nothing if the URL carried none.
+ *
+ * Two reasons this is not optional. `fetch` refuses outright to build a request from a URL
+ * containing credentials ("Request cannot be constructed from a URL that includes
+ * credentials") — and the TypeError it throws to say so quotes the entire URL, which is
+ * how a bank credential ends up in a stack trace. SimpleFIN's access URL always carries
+ * them, so the split has to happen before the call, not after it fails.
+ *
+ * `URL` returns userinfo percent-encoded; the credential is the decoded form.
+ */
+function takeBasicAuth(url: URL): { Authorization: string } | undefined {
+  if (!url.username && !url.password) return undefined
+  const raw = `${decodeURIComponent(url.username)}:${decodeURIComponent(url.password)}`
+  url.username = ''
+  url.password = ''
+  return { Authorization: `Basic ${Buffer.from(raw).toString('base64')}` }
+}
+
+/**
  * `accessUrl` embeds basic-auth credentials for the owner's full bank history — it is a
  * secret. It must never reach an error message or a log line, which is why the throw below
  * carries the status and nothing else.
@@ -103,7 +123,8 @@ export async function claimAccessUrl(setupToken: string): Promise<string> {
 export async function fetchAccounts(accessUrl: string, sinceEpochSeconds: number): Promise<unknown> {
   const url = new URL(`${accessUrl}/accounts`)
   url.searchParams.set('start-date', String(sinceEpochSeconds))
-  const res = await fetch(url, { headers: { Accept: 'application/json' } })
+  const auth = takeBasicAuth(url)
+  const res = await fetch(url, { headers: { Accept: 'application/json', ...auth } })
   if (!res.ok) throw new Error(`SimpleFIN fetch failed: ${res.status}`)
   return res.json()
 }
