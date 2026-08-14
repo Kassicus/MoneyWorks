@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { netWorthOn, netWorthSeries } from '@/lib/net-worth'
+import { chartDates, netWorthOn, netWorthSeries } from '@/lib/net-worth'
 import type { AccountBalance, ManualAssetValue } from '@/lib/net-worth'
 
 const snap = (accountId: string, isAsset: boolean, date: string, balance: number): AccountBalance =>
@@ -121,5 +121,67 @@ describe('netWorthSeries', () => {
       { date: '2026-08-01', netWorth: 100_00 },
       { date: '2026-08-03', netWorth: 300_00 },
     ])
+  })
+})
+
+describe('chartDates', () => {
+  const manual = (asOf: string): ManualAssetValue =>
+    ({ name: 'House', isAsset: true, asOf, value: 400_000_00 })
+
+  it('runs one point per day from the first date with data through today', () => {
+    const snaps = [snap('checking', true, '2026-08-10', 100_00)]
+    expect(chartDates(snaps, [], '2026-08-13')).toEqual([
+      '2026-08-10', '2026-08-11', '2026-08-12', '2026-08-13',
+    ])
+  })
+
+  it('starts at the earliest date across snapshots and manual assets alike', () => {
+    const snaps = [snap('checking', true, '2026-08-12', 100_00)]
+    expect(chartDates(snaps, [manual('2026-08-11')], '2026-08-13')).toEqual([
+      '2026-08-11', '2026-08-12', '2026-08-13',
+    ])
+  })
+
+  it('never starts before the first real data, so day one is a dot and not a cliff', () => {
+    // `netWorthOn` answers 0 for every date before the first snapshot. A fixed trailing
+    // window would therefore draw a line climbing out of $0 on a brand-new install and read
+    // as real history. The chart begins where the data begins.
+    const snaps = [snap('checking', true, '2026-08-13', 100_00)]
+    expect(chartDates(snaps, [], '2026-08-13')).toEqual(['2026-08-13'])
+  })
+
+  it('is a single point when there is no data at all', () => {
+    expect(chartDates([], [], '2026-08-13')).toEqual(['2026-08-13'])
+  })
+
+  it('caps the window by dropping the OLDEST days, so today is always the last point', () => {
+    // The cap must trim the far end, not the near one. Capping forward from the earliest
+    // date would freeze the chart on the 365th day of use: the headline number would keep
+    // moving while the line stopped, and the right edge of the chart would silently stop
+    // meaning "today".
+    const snaps = [snap('checking', true, '2020-01-01', 100_00)]
+    const dates = chartDates(snaps, [], '2026-08-13', 5)
+    expect(dates).toEqual(['2026-08-09', '2026-08-10', '2026-08-11', '2026-08-12', '2026-08-13'])
+  })
+
+  it('defaults to at most a year of points', () => {
+    const snaps = [snap('checking', true, '2020-01-01', 100_00)]
+    const dates = chartDates(snaps, [], '2026-08-13')
+    expect(dates).toHaveLength(365)
+    expect(dates.at(-1)).toBe('2026-08-13')
+    expect(dates[0]).toBe('2025-08-14')
+  })
+
+  it('spans a leap day without losing or repeating one', () => {
+    const snaps = [snap('checking', true, '2028-02-27', 100_00)]
+    expect(chartDates(snaps, [], '2028-03-01')).toEqual([
+      '2028-02-27', '2028-02-28', '2028-02-29', '2028-03-01',
+    ])
+  })
+
+  it('is a single point when every date in the data is in the future', () => {
+    // A manual asset can be dated forward. It contributes nothing to today's net worth, so
+    // charting from its `as_of` would mean an empty range or a run of zeroes.
+    expect(chartDates([], [manual('2027-01-01')], '2026-08-13')).toEqual(['2026-08-13'])
   })
 })

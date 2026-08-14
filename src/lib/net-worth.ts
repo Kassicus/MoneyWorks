@@ -103,3 +103,51 @@ export function netWorthSeries(
 ): { date: string; netWorth: number }[] {
   return dates.map((date) => ({ date, netWorth: netWorthOn(date, snapshots, manual) }))
 }
+
+/** A year of daily points. Enough to answer "is my net worth going up?" at a glance. */
+const MAX_CHART_POINTS = 365
+
+/**
+ * The dates to plot: every day from the first date there is real data through `today`.
+ *
+ * Two ends, two different reasons.
+ *
+ * **The start is the first date with data, never earlier.** `netWorthOn` answers 0 for any
+ * date before the first snapshot, so a fixed trailing window on a new install would draw a
+ * line climbing out of $0 and read as real history. On day one this returns a single point.
+ *
+ * **The cap trims the oldest days, never the newest.** Walking forward from the earliest
+ * date and stopping after `maxPoints` would freeze the chart on the 365th day of use — the
+ * headline figure would go on moving while the line stood still, and the right edge would
+ * quietly stop meaning "today". Trimming the far end keeps `today` as the last point
+ * forever, and cannot reintroduce the $0 cliff: a window that starts later than the first
+ * data starts on a date whose net worth is a real carried-forward number.
+ *
+ * `today` is a parameter rather than a `new Date()` inside, so this is pure and the answer
+ * does not depend on when the suite runs.
+ */
+export function chartDates(
+  snapshots: AccountBalance[],
+  manual: ManualAssetValue[],
+  today: string,
+  maxPoints: number = MAX_CHART_POINTS,
+): string[] {
+  // ISO `yyyy-mm-dd` sorts lexicographically, so this is the earliest date without parsing.
+  const earliest = [...snapshots.map((s) => s.date), ...manual.map((m) => m.asOf)].sort()[0]
+  const windowStart = addUtcDays(today, 1 - Math.max(1, maxPoints))
+  // `earliest > today` covers a manual asset dated forward: it contributes nothing to net
+  // worth yet, so there is nothing to plot before today either.
+  const start =
+    !earliest || earliest > today ? today : earliest < windowStart ? windowStart : earliest
+
+  const out: string[] = []
+  for (let d = start; d <= today; d = addUtcDays(d, 1)) out.push(d)
+  return out
+}
+
+/** `date` shifted by whole days, in UTC — no local timezone, so no DST-shortened day. */
+function addUtcDays(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
