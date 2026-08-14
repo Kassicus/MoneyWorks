@@ -1,1 +1,14 @@
+-- Fails against a database that already holds snapshot rows:
+--   ERROR: column "is_asset" of relation "balance_snapshots" contains null values
+-- The missing DEFAULT is deliberate. Every default sign is wrong for half the rows, and a
+-- snapshot carrying the wrong sign silently rewrites past net worth — which is the bug this
+-- column exists to fix, so defaulting it here would reintroduce it at migration time.
+-- Remedy, replacing the statement below with three:
+--   ALTER TABLE "balance_snapshots" ADD COLUMN "is_asset" boolean;
+--   UPDATE "balance_snapshots" s SET "is_asset" = a."is_asset"
+--     FROM "accounts" a WHERE a."id" = s."account_id";
+--   ALTER TABLE "balance_snapshots" ALTER COLUMN "is_asset" SET NOT NULL;
+-- The backfill copies each account's *current* classification onto its whole history. That
+-- is the best guess available and exactly the coupling this column removes going forward:
+-- an account that flipped between asset and liability has history it cannot recover.
 ALTER TABLE "balance_snapshots" ADD COLUMN "is_asset" boolean NOT NULL;
