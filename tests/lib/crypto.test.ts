@@ -23,4 +23,20 @@ describe('crypto', () => {
     // also pass if decrypt broke for an unrelated reason (missing key, bad IV length).
     expect(() => decrypt(parts)).toThrow(/unable to authenticate data/i)
   })
+
+  /**
+   * GCM permits tags shorter than 128 bits, and Node's default is to accept whatever length
+   * `setAuthTag` is handed and verify only that much. A 4-byte tag is one in 2^32 to forge
+   * by trial; a 16-byte one is not reachable. The tag arrives from the database row being
+   * decrypted, which is precisely where a tampered one would come from, so the length is
+   * fixed at the cipher rather than trusted from the input.
+   */
+  it('refuses a truncated auth tag instead of verifying only its first bytes', () => {
+    const parts = encrypt('secret')
+    expect(parts.authTag.length).toBe(16)
+
+    const truncated = { ...parts, authTag: parts.authTag.subarray(0, 4) }
+
+    expect(() => decrypt(truncated)).toThrow(/Invalid authentication tag length/i)
+  })
 })

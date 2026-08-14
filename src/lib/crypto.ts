@@ -1,3 +1,8 @@
+// A build error, not a convention. This module reads `ENCRYPTION_KEY` and returns
+// plaintext credentials; importing it from a Client Component would inline the key into
+// the browser bundle. There are Client Components in this app now (`net-worth-chart.tsx`,
+// `error.tsx`), so "server-side only" needed to stop being a sentence in a comment.
+import 'server-only'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 
 /**
@@ -29,7 +34,13 @@ export function encrypt(plaintext: string): { ciphertext: Buffer; iv: Buffer; au
 }
 
 export function decrypt(parts: { ciphertext: Buffer; iv: Buffer; authTag: Buffer }): string {
-  const decipher = createDecipheriv(ALGO, key(), parts.iv)
+  // `authTagLength` is not decoration. Without it, `setAuthTag` accepts any GCM-legal tag
+  // length — down to 4 bytes — and `final()` then verifies only the bytes it was given, so a
+  // truncated tag is checked as a truncated tag. A 32-bit tag is forgeable by guessing; a
+  // 128-bit one is not. Nothing in this app writes a short tag, which is the point: the row
+  // being decrypted comes out of the database, and that is where a tampered tag would arrive
+  // from. `encrypt` always emits 16 bytes, so this rejects rather than restricts.
+  const decipher = createDecipheriv(ALGO, key(), parts.iv, { authTagLength: 16 })
   decipher.setAuthTag(parts.authTag)
   // `final()` throws if the auth tag does not match, so tampered ciphertext never decodes.
   return Buffer.concat([decipher.update(parts.ciphertext), decipher.final()]).toString('utf8')

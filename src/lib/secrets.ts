@@ -1,3 +1,7 @@
+// The "server-side only" below, enforced by the bundler rather than by whoever reads it:
+// importing this from a Client Component is now a build error instead of a decrypted
+// SimpleFIN access URL in a JavaScript bundle. `lib/crypto.ts` carries the same import.
+import 'server-only'
 import { eq } from 'drizzle-orm'
 import { secrets } from '@/db/schema'
 import type { Db } from '@/db/types'
