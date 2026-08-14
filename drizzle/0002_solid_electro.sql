@@ -1,0 +1,2 @@
+ALTER TABLE "balance_snapshots" ADD CONSTRAINT "balance_snapshots_balance_non_negative" CHECK ("balance_snapshots"."balance" >= 0);--> statement-breakpoint
+ALTER TABLE "manual_assets" ADD CONSTRAINT "manual_assets_value_non_negative" CHECK ("manual_assets"."value" >= 0);

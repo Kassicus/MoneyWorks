@@ -1,5 +1,6 @@
+import { sql } from 'drizzle-orm'
 import {
-  pgTable, uuid, text, boolean, date, bigint, integer, timestamp, primaryKey, customType,
+  pgTable, uuid, text, boolean, date, bigint, integer, timestamp, primaryKey, customType, check,
 } from 'drizzle-orm/pg-core'
 
 // Neon returns `bytea` as a Buffer; PGlite returns a Uint8Array. `fromDriver` normalises
@@ -33,7 +34,17 @@ export const balanceSnapshots = pgTable('balance_snapshots', {
   date: date('date').notNull(),
   balance: bigint('balance', { mode: 'number' }).notNull(),
   isAsset: boolean('is_asset').notNull(),
-}, (t) => ({ pk: primaryKey({ columns: [t.accountId, t.date] }) }))
+}, (t) => ({
+  pk: primaryKey({ columns: [t.accountId, t.date] }),
+  // The positive-magnitude rule, in the one place that cannot be bypassed.
+  //
+  // `netWorthOn` *negates* every row whose `is_asset` is false, so a negative magnitude here
+  // adds a debt to net worth instead of subtracting it — a swing of twice the balance, with
+  // no crash and nothing on the page that looks wrong. Until this constraint, the sole
+  // enforcement was `Math.abs()` in `sync/simplefin.ts`; three modules read these rows and
+  // none of them re-checks the sign, so deleting that one call was a silent $400 error.
+  balanceIsAMagnitude: check('balance_snapshots_balance_non_negative', sql`${t.balance} >= 0`),
+}))
 
 export const transactions = pgTable('transactions', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -54,7 +65,13 @@ export const manualAssets = pgTable('manual_assets', {
   value: bigint('value', { mode: 'number' }).notNull(),
   asOf: date('as_of').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-})
+}, (t) => ({
+  // Same rule as `balance_snapshots.balance`, same reason: a liability is entered as a
+  // positive amount with the asset box unticked, and `netWorthOn` does the subtracting. A
+  // negative value stored here counts a debt as an asset. `valuationCents` refuses one, and
+  // this is the version that a second writer cannot forget.
+  valueIsAMagnitude: check('manual_assets_value_non_negative', sql`${t.value} >= 0`),
+}))
 
 export const debts = pgTable('debts', {
   accountId: uuid('account_id').primaryKey().references(() => accounts.id),

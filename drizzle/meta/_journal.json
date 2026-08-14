@@ -15,6 +15,13 @@
       "when": 1786681362130,
       "tag": "0001_old_gladiator",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786694278000,
+      "tag": "0002_solid_electro",
+      "breakpoints": true
     }
   ]
 }
