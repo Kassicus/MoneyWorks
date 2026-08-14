@@ -6,7 +6,10 @@ import { isAllowedEmail } from '@/lib/auth'
 // `/api/sync` authenticates with the CRON_SECRET bearer token in its own route
 // handler — it is not an unauthenticated route. The sign-in/sign-up routes must
 // be reachable signed-out or there is no way to sign in.
-const isPublic = createRouteMatcher(['/api/sync', '/sign-in(.*)', '/sign-up(.*)'])
+//
+// `(/.*)?` and not `(.*)`: the latter is a prefix match, so it would also exempt
+// /sign-invoices, /sign-in-report and /sign-upgrade. Whole segments only.
+const isPublic = createRouteMatcher(['/api/sync', '/sign-in(/.*)?', '/sign-up(/.*)?'])
 
 export default clerkMiddleware(async (auth, req) => {
   if (isPublic(req)) return
@@ -29,8 +32,13 @@ export const config = {
   // allowlist check. So the exclusion is an explicit list of static-asset
   // extensions (Clerk's documented matcher) instead. Everything that renders or
   // returns app data is covered; only build output and static files are not.
+  //
+  // Clerk's list also excludes csv/doc/xls/zip, which this app never serves as
+  // static files — but might one day serve as an export route. Excluding them
+  // would put /transactions.csv outside the boundary silently, so they are not
+  // excluded here. Only extensions actually present in the build or public/.
   matcher: [
-    '/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)',
+    '/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|webmanifest)).*)',
     '/api(.*)',
   ],
 }
