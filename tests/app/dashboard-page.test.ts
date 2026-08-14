@@ -1,20 +1,31 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
+import type { AccountBalance, ManualAssetValue } from '@/lib/net-worth'
+import { textOf } from '../helpers/element-tree'
 
 /**
- * One assertion, and it is a negative one: a caller who is not the owner must not cause the
+ * Two things, and the first is a negative: a caller who is not the owner must not cause the
  * dashboard to *read* their finances, not merely to render them. `ownerEmail` has its own
  * exhaustive suite and the queries have theirs; this file exists only because neither of
  * those notices if the page stops calling the gate, or calls it after loading the data.
  *
- * That is also why it takes the same shape as `tests/app/sync-route.test.ts`: mock the
- * boundary, then assert the work did *not* happen. Nothing here checks markup.
+ * That is why those tests take the same shape as `tests/app/sync-route.test.ts`: mock the
+ * boundary, then assert the work did *not* happen.
+ *
+ * The second is the headline figure itself, which is the whole product on one line — see
+ * the last describe. `tsc` accepts a `number` as a `ReactNode`, so nothing but an assertion
+ * on the rendered text stops `$400,000.00` becoming `40000000`.
  *
  * `@/db/client` must be mocked because it calls `neon(process.env.DATABASE_URL!)` at import
  * time and there is no database in this suite; the handle is only passed through.
  */
 
 const auth = vi.fn<() => Promise<{ sessionClaims: unknown }>>()
-const loadNetWorthInputs = vi.fn(async () => ({ snapshots: [], manual: [] }))
+// Annotated rather than inferred from the empty arrays below, so a test can hand it real
+// rows: `netWorthOn` is not mocked, and the number it computes is what the page renders.
+const loadNetWorthInputs = vi.fn(async (): Promise<{
+  snapshots: AccountBalance[]
+  manual: ManualAssetValue[]
+}> => ({ snapshots: [], manual: [] }))
 const lastSuccessfulSync = vi.fn(async (): Promise<Date | null> => null)
 const hasAnySyncRun = vi.fn(async () => false)
 
@@ -72,5 +83,34 @@ describe('the dashboard page checks the caller itself', () => {
 
     expect(loadNetWorthInputs).toHaveBeenCalledTimes(1)
     expect(lastSuccessfulSync).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('the dashboard renders what it read', () => {
+  /**
+   * The product's headline number, and the last unpinned money boundary in the app: money is
+   * integer cents everywhere and becomes dollars only here, at the render. `tsc` cannot
+   * defend that, because a `number` is a perfectly good `ReactNode` — dropping `formatCents`
+   * prints `40000000` in 5xl type where `$400,000.00` belongs, and every other test in the
+   * project still passes. The same assertion guards the assets and debts pages.
+   */
+  it('formats net worth as dollars, never as raw cents', async () => {
+    auth.mockResolvedValue({ sessionClaims: { email: 'owner@example.com' } })
+    // One snapshot, dated in the past, so `netWorthOn(today, …)` carries it forward to
+    // whatever day the suite runs on.
+    loadNetWorthInputs.mockResolvedValueOnce({
+      snapshots: [
+        { accountId: 'acct-1', isAsset: true, date: '2026-01-01', balance: 400_000_00 },
+      ],
+      manual: [],
+    })
+    // A fresh sync, so the staleness banner renders nothing and the only text in the tree
+    // is the figure under test.
+    lastSuccessfulSync.mockResolvedValueOnce(new Date())
+
+    const text = textOf(await DashboardPage())
+
+    expect(text).toContain('$400,000.00')
+    expect(text).not.toContain('40000000')
   })
 })
